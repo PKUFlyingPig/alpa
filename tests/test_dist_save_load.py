@@ -1,15 +1,20 @@
 """Test distributed mulit-host device mesh."""
 
+from difflib import restore
 import subprocess
 import tempfile
 import unittest
+from alpa.serialization import restore_checkpoint
 
+from flax import linen as nn
+from flax import optim
+from flax.serialization import to_state_dict
 import jax
 import jax.numpy as jnp
 import numpy as np
 import ray
 
-from alpa import DeviceCluster, DistributedArray
+from alpa import DeviceCluster, DistributedArray, parallelize, set_parallelize_options, save_checkpoint
 from alpa.testing import assert_allclose
 
 
@@ -83,10 +88,78 @@ class DistSaveLoadTest(unittest.TestCase):
         # Cleanup
         physical_mesh.shutdown()
 
+    def test_mlp_save_load(self):
+        # Launch a multi-host device mesh
+        device_cluster = DeviceCluster()
+        physical_mesh = device_cluster.get_physical_mesh()
+        set_parallelize_options(devices=physical_mesh)
+
+        batch_size = 16
+        input_dim = hidden_dim = output_dim = 32
+
+        class Model(nn.Module):
+
+            @nn.compact
+            def __call__(self, x):
+                x = nn.Dense(features=hidden_dim)(x)
+                x = nn.relu(x)
+                x = nn.Dense(features=output_dim)(x)
+                return x
+
+        def train_step(optimizer, batch, apply_fn):
+
+            def loss_func(params):
+                out = apply_fn(params, batch["x"])
+                return jnp.mean((out - batch["y"])**2)
+
+            grad = jax.grad(loss_func)(optimizer.target)
+            new_optimizer = optimizer.apply_gradient(grad)
+            return new_optimizer
+
+        # One batch of data and label
+        batch = {
+            "x": np.random.randn(batch_size, input_dim),
+            "y": np.random.randn(batch_size, output_dim),
+        }
+
+        # Init model and optimizer
+        model = Model()
+        rngkey = jax.random.PRNGKey(0)
+        params = model.init(rngkey, batch["x"])
+        optimizer = optim.GradientDescent(1e-2).create(params)
+
+        # Serial execution
+        optimizer_serial = train_step(optimizer, batch, model.apply)
+
+        # Parallel execution
+        train_step_parallel_save = parallelize(train_step)
+        optimizer_parallel_save = train_step_parallel_save(optimizer, batch, model.apply)
+
+        # Check results
+        assert_allclose(optimizer_serial.target, optimizer_parallel_save.target)
+
+        # Checkpoint (TODO: remove hard-coded path)
+        ckpt_dir1 = "/home/ubuntu/efs/ckpt1"
+        subprocess.run(["rm", "-rf", ckpt_dir1])
+        save_checkpoint(ckpt_dir1, optimizer_parallel_save, 1)
+
+        # Restore checkpoint
+        train_step_parallel_restore = parallelize(train_step)
+        executable = train_step_parallel_restore.get_executable(optimizer, batch, model.apply)
+        # optimizer_parallel_load = restore_checkpoint(ckpt_dir1, 1)
+
+        # Check results
+        # assert_allclose(optimizer_serial.target, optimizer_parallel_load.target)
+
+        # Cleanup
+        physical_mesh.shutdown()
+
+
 
 def suite():
     suite = unittest.TestSuite()
-    suite.addTest(DistSaveLoadTest("test_distributed_array_save_load"))
+    #suite.addTest(DistSaveLoadTest("test_distributed_array_save_load"))
+    suite.addTest(DistSaveLoadTest("test_mlp_save_load"))
     return suite
 
 
