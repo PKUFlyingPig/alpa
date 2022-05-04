@@ -11,6 +11,8 @@ import re
 import time
 from typing import Any, List, Union, Sequence, Tuple, Optional
 
+import cupy
+from cupy.cuda import nccl
 import jax
 from jax import core, jit, xla, device_put
 from jax._src.api import ShapeDtypeStruct
@@ -26,8 +28,6 @@ from jax.interpreters.pxla import (ShardingSpec, _as_slice_indices,
 from jax.lib import xla_client
 import jax.numpy as jnp
 import numpy as np
-import cupy
-from cupy.cuda import nccl
 import ray
 import tensorstore as ts
 
@@ -56,8 +56,8 @@ ReshardingRecvSpec = namedtuple("ReshardingRecvSpec",
                                 ["device_id", "shape", "dtype", "tile_specs"])
 ReshardingRecvTask = namedtuple("ReshardingRecvTask",
                                 ["recv_specs", "group_name"])
-ReshardingAllGatherSpec = namedtuple(
-    "ReshardingAllGatherSpec", ["device_ids", "tensor_slices", "output_slice"])
+ReshardingAllGatherSpec = namedtuple("ReshardingAllGatherSpec",
+                                     ["device_ids", "tensor_slices"])
 ReshardingAllGatherTask = namedtuple("ReshardingAllGatherTask",
                                      ["allgather_specs"])
 
@@ -73,7 +73,7 @@ class MeshHostWorker:
                 server_address, host_id))
         logger.debug(
             f"{host_id}: Trying to connect to xla runtime at {server_address}")
-        self.distributed_client.connect()
+        status = self.distributed_client.connect()
         logger.debug(
             f"{host_id}: Success to connect to xla runtime at {server_address}")
         self.backend = xla_client.make_gpu_client(self.distributed_client,
@@ -97,7 +97,7 @@ class MeshHostWorker:
                 self.signal_tensors.append(
                     jax_tensor_to_cupy(device_put(
                         jnp.ones((1,), dtype=jnp.int8), d),
-                        take_ownership=True))
+                                       take_ownership=True))
 
     ##### TensorStore Related Functions #####
     def get_ts_spec(self, ckpt_path: str):
@@ -126,6 +126,7 @@ class MeshHostWorker:
     def load_buffers_from_ts(self, ckpt_dir: str, uuids: Sequence[int],
                              shard_indices: Sequence[Index],
                              device_ids: Sequence[int]):
+        assert len(uuids) > 0
         ts_spec = self.get_ts_spec(ckpt_dir)
         t = ts.open(ts.Spec(ts_spec), open=True).result()
 
@@ -136,6 +137,7 @@ class MeshHostWorker:
     def save_buffers_to_ts(self, ckpt_dir: str, uuids: Sequence[int],
                            shard_indices: Sequence[Index],
                            global_shape: Sequence[int]):
+        assert len(uuids) > 0
         for uuid in uuids:
             assert uuid in self.buffers
 
@@ -272,7 +274,6 @@ class MeshHostWorker:
 
     ##### Data loader Related Functions #####
     def put_data_loader(self, uuid: int, *args):
-        # pylint: disable=import-outside-toplevel
         from alpa.data_loader import MeshWorkerDataLoader
         self.data_loaders[uuid] = MeshWorkerDataLoader(self, *args)
 
@@ -407,8 +408,7 @@ class MeshHostWorker:
         if is_bool:
             self.buffers[uuid] = _uint8_to_bool(self.buffers[uuid])
 
-    @staticmethod
-    def init_p2p_communicator(group_name, my_rank, my_gpu_idx, peer_rank,
+    def init_p2p_communicator(self, group_name, my_rank, my_gpu_idx, peer_rank,
                               peer_gpu_idx, nccl_uid):
         """Initialize the P2P communicator from within the mesh workers."""
         assert col.is_group_initialized(group_name)
@@ -416,19 +416,17 @@ class MeshHostWorker:
         g = col.check_and_get_group(group_name)
         g.create_p2p_communicator(my_gpu_idx, peer_rank, peer_gpu_idx, nccl_uid)
 
-    @staticmethod
-    def generate_nccl_uid(group_name):
+    def generate_nccl_uid(self, group_name):
         """Generate the NCCL unique ID in advance."""
         g = col.check_and_get_group(group_name)
         uid = g.generate_nccl_uid()
         return uid
 
     def allgather(self, uuids: Sequence[int], device_ids: Sequence[int],
-                  tensor_slices: Sequence[slice], output_slice):
+                  tensor_slices: Sequence[slice]):
         cupy_buffers = []
         communicators = self.allgather_communicators[repr(sorted(device_ids))]
         relative_idx = dict(zip(sorted(device_ids), range(len(device_ids))))
-        output_idx, _ = infer_offset_and_n_elements(output_slice)
         is_bool = self.buffers[uuids[0]].dtype == np.bool_
         nccl_util.groupStart()
         for device_id, tensor_slice in zip(device_ids, tensor_slices):
@@ -437,10 +435,9 @@ class MeshHostWorker:
             cupy_buffer = xla_buffer_to_cupy(xla_buffer, take_ownership=True)
             ind, n_elements = infer_offset_and_n_elements(tensor_slice)
             cupy_slice = cupy_buffer[ind]
-            cupy_output_slice = cupy_buffer[output_idx]
             communicators[relative_idx[device_id]].allGather(
                 nccl_util.get_tensor_ptr(cupy_slice),
-                nccl_util.get_tensor_ptr(cupy_output_slice), n_elements,
+                nccl_util.get_tensor_ptr(cupy_buffer), n_elements,
                 nccl_util.get_nccl_tensor_dtype(cupy_buffer),
                 cupy.cuda.Stream.null.ptr)
             cupy_buffers.append(cupy_buffer)
@@ -483,7 +480,8 @@ class MeshHostWorker:
     def put_resharding_allgather_task(self, uuid, tasks):
         all_gather_task = ReshardingAllGatherTask(tasks)
         allgather_specs = all_gather_task.allgather_specs
-        for allgather_spec in allgather_specs:
+        for group_idx in allgather_specs:
+            allgather_spec: ReshardingAllGatherSpec = allgather_specs[group_idx]
             device_ids = sorted(allgather_spec.device_ids)
             if repr(device_ids) not in self.allgather_communicators:
                 communicators = nccl.NcclCommunicator.initAll(list(device_ids))
@@ -493,13 +491,12 @@ class MeshHostWorker:
     def run_allgather_task(self, uuid, buffer_uuids):
         task: ReshardingAllGatherTask = self.allgather_tasks[uuid]
         allgather_specs = task.allgather_specs
-        for allgather_spec in allgather_specs:
+        for group_idx in allgather_specs:
+            allgather_spec: ReshardingAllGatherSpec = allgather_specs[group_idx]
             self.allgather(buffer_uuids, allgather_spec.device_ids,
-                           allgather_spec.tensor_slices,
-                           allgather_spec.output_slice)
+                           allgather_spec.tensor_slices)
 
-    @staticmethod
-    def destroy_collective_group(group_name: str = "default"):
+    def destroy_collective_group(self, group_name: str = "default"):
         col.destroy_collective_group(group_name)
 
     ##### Data Loader Related Functions #####
@@ -527,8 +524,7 @@ class MeshHostWorker:
                                      number=3,
                                      sync=False):
         # TODO(yonghao): the sync function should be carefully reconsidered
-        def run_fn():
-            self.run_resharding_send_task(uuid, buf_uuids)
+        run_fn = lambda: self.run_resharding_send_task(uuid, buf_uuids)
         sync_fn = self.sync if sync else None
         costs = benchmark_func(run_fn, sync_fn, warmup, repeat, number)
         return np.mean(costs)
@@ -551,12 +547,10 @@ class MeshHostWorker:
         costs = benchmark_func(run_fn, sync_fn, warmup, repeat, number)
         return np.mean(costs)
 
-    @staticmethod
-    def get_timer(name: str):
+    def get_timer(self, name: str):
         return timers(name)
 
-    @staticmethod
-    def reset_timer(name: str):
+    def reset_timer(self, name: str):
         timers(name).reset()
 
     ##### Other Functions #####
@@ -826,7 +820,7 @@ class LocalPhysicalDeviceMesh(PhysicalDeviceMesh):
 
 def device_id_to_str(host_ip, device_id, device_type="gpu"):
     """Convert device id (int) to a canonical device string."""
-    return f"{host_ip}:{device_type}:{device_id}"
+    return "{}:{}:{}".format(host_ip, device_type, str(device_id))
 
 
 # Used ports for XLA distributed runtime servers.
@@ -851,7 +845,6 @@ class DistributedPhysicalDeviceMesh(PhysicalDeviceMesh):
         self.num_devices_per_host = num_devices_per_host
         self.workers = None
         self.launched = False
-        self.service_server = None
 
         if devices is not None:
             if len(devices) != len(host_ids):
@@ -885,6 +878,7 @@ class DistributedPhysicalDeviceMesh(PhysicalDeviceMesh):
         used_port_set.add(port)
 
         self.server_address = f"{self.head_ip}:{port}"
+        self.service_server = None
         logger.debug(f"Trying to start XLA gRPC server on port: {port}...")
         self.service_server = xla_client._xla.get_distributed_runtime_service(
             self.server_address, self.num_hosts)
@@ -914,9 +908,6 @@ class DistributedPhysicalDeviceMesh(PhysicalDeviceMesh):
             if "XLA_PYTHON_CLIENT_ALLOCATOR" in os.environ:
                 env_vars["XLA_PYTHON_CLIENT_ALLOCATOR"] = os.environ[
                     "XLA_PYTHON_CLIENT_ALLOCATOR"]
-
-            if "NCCL_DEBUG" in os.environ:
-                env_vars["NCCL_DEBUG"] = os.environ["NCCL_DEBUG"] if i == 0 else "VERSION"
 
             if global_config.use_aws_efa:
                 env_vars.update({
@@ -1136,8 +1127,8 @@ class DistributedPhysicalDeviceMesh(PhysicalDeviceMesh):
     def get_max_memory_allocated(self):
         self.sync_workers()
         return max(
-            ray.get([w.get_max_memory_allocated.remote()
-                     for w in self.workers]))
+            ray.get([w.get_max_memory_allocated.remote() for w in self.workers
+                    ]))
 
     def get_available_memory(self):
         return min(
@@ -1188,7 +1179,6 @@ class DistributedArray:
         self._npy_value = None
         self._one_replica_buffer_indices = None
         self._fetched_np_buffers = None
-        self.device_buffers = None
 
     def block_until_ready(self):
         """Block until all remote buffers of this array are ready."""
@@ -1219,16 +1209,16 @@ class DistributedArray:
             indices_per_host[buf_ref.host_id].append(indice)
         obj_refs = []
         for host_id, uuids in buf_refs_per_host.items():
-            obj_refs.append(
-                self.device_mesh.workers[host_id].save_buffers_to_ts.remote(
-                    path, uuids, indices_per_host[host_id], self.shape))
+            if len(uuids) > 0:
+                obj_refs.append(
+                    self.device_mesh.workers[host_id].save_buffers_to_ts.remote(
+                        path, uuids, indices_per_host[host_id], self.shape))
         return ray.get(obj_refs)
 
     @classmethod
     def load(cls, path: str, aval: ShapedArray, device_mesh: PhysicalDeviceMesh,
              sharding_spec: ShardingSpec):
         """Load the data from `path` distributedly with `aval` and return a new DistributedArray"""
-        # pylint: disable=import-outside-toplevel
         from alpa.mesh_executable import create_remote_buffer_refs
         buf_refs, _ = create_remote_buffer_refs(device_mesh, 1)
         indices = pxla.spec_to_indices(aval.shape, sharding_spec)
@@ -1242,13 +1232,14 @@ class DistributedArray:
             device_ids_per_host[buf_ref.host_id].append(buf_ref.device_id)
         obj_refs = []
         for host_id, uuids in buf_refs_per_host.items():
-            obj_refs.append(
-                device_mesh.workers[host_id].load_buffers_from_ts.remote(
-                    path, uuids, indices_per_host[host_id],
-                    device_ids_per_host[host_id]))
+            if len(uuids) > 0:
+                obj_refs.append(
+                    device_mesh.workers[host_id].load_buffers_from_ts.remote(
+                        path, uuids, indices_per_host[host_id],
+                        device_ids_per_host[host_id]))
         ray.get(obj_refs)
         return DistributedArray(device_mesh, aval, sharding_spec, buf_refs,
-                                indices)
+                                indice)
 
     @property
     def one_replica_buffer_indices(self):
@@ -1329,8 +1320,8 @@ class ReplicatedDistributedArray:
 
     def __init__(self, device_meshes: Sequence[PhysicalDeviceMesh],
                  arrays: Sequence[DistributedArray]):
-        self._mesh_array_map = {}
-        self._array_mesh_map = {}
+        self._mesh_array_map = dict()
+        self._array_mesh_map = dict()
         for mesh, array in zip(device_meshes, arrays):
             self._mesh_array_map[mesh] = array
             self._array_mesh_map[array] = mesh
@@ -1536,10 +1527,9 @@ class DeviceCluster:
         from ray.worker import _global_node as ray_global_node
         try:
             self.head_info = ray_global_node.address_info
-        except AttributeError as ae:
+        except AttributeError:
             raise RuntimeError(
-                "Cannot access ray global node. Did you call ray.init?") \
-                from ae
+                "Cannot access ray global node. Did you call ray.init?")
         self.head_ip = self.head_info["node_ip_address"]
 
         # Gather host ids
@@ -1627,7 +1617,6 @@ class DeviceCluster:
 # Register ShardArg Handler
 ########################################
 def _device_mesh_put(device_mesh, shards, num_batch, batch_dim):
-    # pylint: disable=import-outside-toplevel
     from alpa.mesh_executable import create_remote_buffer_refs
     buf_refs, buf_uuids = create_remote_buffer_refs(device_mesh, num_batch)
     device_ids = np.arange(device_mesh.num_devices_per_host)
@@ -1642,7 +1631,6 @@ def _device_mesh_put(device_mesh, shards, num_batch, batch_dim):
 
 
 def _device_mesh_put_dummy(array, device_mesh, indices, num_batch):
-    # pylint: disable=import-outside-toplevel
     from alpa.mesh_executable import create_remote_buffer_refs
     buf_refs, buf_uuids = create_remote_buffer_refs(device_mesh, num_batch)
     step = device_mesh.num_devices_per_host * num_batch
@@ -1729,8 +1717,8 @@ def _uint8_to_bool(xla_buffer):
 
 
 shard_arg_handlers = {}  # Shard an argument to a distributed device mesh
-for a in array_types:
-    shard_arg_handlers[a] = _shard_array
+for t in array_types:
+    shard_arg_handlers[t] = _shard_array
 shard_arg_handlers[ShapedArray] = _shard_abstract_array
 shard_arg_handlers[ShapeDtypeStruct] = _shard_abstract_array
 shard_arg_handlers[xla._DeviceArray] = _shard_device_array
