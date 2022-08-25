@@ -12,7 +12,8 @@ from alpa.util import print_used_time
 from util import compute_gpt_parameter_count, compute_gpt_tflops
 from benchmark_parallel_utils import (
     get_pipeshard_parallel_method,
-    compile_and_benchmark_pipeshard_inference_executable)
+    compile_and_benchmark_pipeshard_inference_executable,
+    compile_pipeshard_inference_executable)
 
 
 def create_infer_params_aval(rngkey, model, batch, model_type):
@@ -153,25 +154,45 @@ def benchmark_gpt_inference_internal(model_type,
          virtual_mesh.num_devices_per_host,
          pipeline_schedule="inference")
 
-    model, params, batch, rngkey = prepare_gpt_inference_input_and_model(
+    model1, params1, batch1, rngkey1 = prepare_gpt_inference_input_and_model(
+        model_type, benchmark_case, add_manual_layer_marker,
+        num_manual_pipeline_stages)
+    model2, params2, batch2, rngkey2 = prepare_gpt_inference_input_and_model(
         model_type, benchmark_case, add_manual_layer_marker,
         num_manual_pipeline_stages)
 
-    infer_step = get_infer_step(method, model, model_type)
+    infer_step1 = get_infer_step(method, model1, model_type)
+    infer_step2 = get_infer_step(method, model2, model_type)
 
-    (latencies, max_mem_allocated, compilation_times,
-     executable) = compile_and_benchmark_pipeshard_inference_executable(
-         benchmark_case.parallel_mode,
-         niter,
-         infer_step,
-         params, (batch, rngkey),
-         profile_driver_time=profile_driver_time)
+    exec1, params1 = compile_pipeshard_inference_executable(
+                        benchmark_case.parallel_mode,
+                        infer_step1,
+                        params1, (batch1, rngkey1))
+    exec2, params2 = compile_pipeshard_inference_executable(
+                        benchmark_case.parallel_mode,
+                        infer_step2,
+                        params2, (batch2, rngkey2))
 
+    for i in range(3):
+        print(f"Iteration {i} ...")
+        _ = infer_step1(params1, batch1, rngkey1)
+        _ = infer_step2(params2, batch2, rngkey2)
+        exec1.sync()
+        exec2.sync()
+
+    latencies1 = exec1.get_execution_time_costs()[1:]
+    latencies2 = exec2.get_execution_time_costs()[1:]
+    print(latencies1)
+    print(latencies2)
+    print(np.mean(latencies1))
+    print(np.mean(latencies2))
+    print_used_time("Benchmark")
+   
     # Compute statistics
     tflops, parameter_count = compute_gpt_inference_statistics(
-        benchmark_case, latencies, virtual_mesh.num_devices_per_host)
+        benchmark_case, latencies1, virtual_mesh.num_devices_per_host)
     metadata = {
-        "latencies": latencies,
-        "compilation_times": compilation_times,
+        "latencies": latencies1,
+        "compilation_times": 0,
     }
-    return parameter_count, max_mem_allocated, latencies, tflops, metadata
+    return parameter_count, 0, latencies1, tflops, metadata

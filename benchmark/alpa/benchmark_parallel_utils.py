@@ -384,6 +384,23 @@ def compile_and_benchmark_shard_training_executable(physical_mesh,
     peak_mem = max(physical_mesh.get_max_memory_allocated(), alloc_mem)
     return latencies, ilp_objective, peak_mem, executable
 
+def compile_pipeshard_inference_executable(
+        parallel_mode,
+        infer_step,
+        params,
+        other_inference_step_inputs):
+    executable, _ = compile_pipeshard_executable(
+        parallel_mode, infer_step, params, other_inference_step_inputs)
+    # Preshard params
+    params_ps = executable.get_input_placement_specs()[0]
+    flat_params, in_tree = tree_flatten(params)
+    flat_ps = tree_leaves(params_ps)
+    params = tree_unflatten(
+        in_tree,
+        executable.mesh_group.shard_args_to_arrays(flat_ps, flat_params))
+    print_used_time("Preshard (driver)")
+    return executable, params
+
 
 def compile_and_benchmark_pipeshard_inference_executable(
         parallel_mode,
