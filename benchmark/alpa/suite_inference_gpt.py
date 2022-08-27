@@ -36,8 +36,9 @@ def get_config(model_config,
                         profile_suite[num_gpus].append(case)
 
 
-get_config(gpt_specs["6.7B"], [1], [1], [1, 2, 4, 8], [1, 256], [1, 4, 16, 64])
-get_config(gpt_specs["6.7B"], [1], [1, 2, 4, 8], [1], [1, 256], [1, 4, 16, 64],
-           ignore_one_device_case=True)
-get_config(gpt_specs["6.7B"], [1, 2, 4, 8], [1], [1], [1, 256], [1, 4, 16, 64],
-           ignore_one_device_case=True)
+# get_config(gpt_specs["6.7B"], [1], [1], [1, 2, 4, 8], [1, 256], [1, 4, 16, 64])
+# get_config(gpt_specs["6.7B"], [1], [1, 2, 4, 8], [1], [1, 256], [1, 4, 16, 64],
+#            ignore_one_device_case=True)
+# get_config(gpt_specs["6.7B"], [1, 2, 4, 8], [1], [1], [1, 256], [1, 4, 16, 64],
+#            ignore_one_device_case=True)
+get_config(gpt_specs["2.6B"], [1], [1], [1, 2], [1], [1])

@@ -2,6 +2,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pickle
 
 from alpa import (parallelize, get_global_cluster,
                   set_global_virtual_physical_mesh, global_config)
@@ -181,36 +182,24 @@ def benchmark_gpt_inference_internal(model_type,
     # no synchronization
     global_config.pipeline_check_alive = False
 
-    # Load workload
+    # Load workload and Benchmark
+    #workload_name = "Even_10Hz_20s"
+    #workload_name = "Even_10Hz_20s"
+    #workload_name = "Skewed8to2_5Hz_20s"
+    workload_name = "Skewed8to2_10Hz_20s"
+    with open(workload_name, 'rb') as f:
+        workload = pickle.load(f)
 
-    for i in range(1):
-        print(f"Iteration {i} ...")
-        timers("req1").start()
-        timers("req2").start()
-        loss1 = infer_step1(params1, batch1, rngkey1)
-        loss1.get_remote_buffers_async()
-        loss2 = infer_step2(params2, batch2, rngkey2)
-        loss2.get_remote_buffers_async()
-        print_used_time(f"time{i}")
-    
-    _ = loss1._value
-    timers("req1").stop()
-    _ = loss2._value
-    timers("req2").stop()
-
-    latencies1 = [timers("req1").elapsed()]
-    latencies2 = [timers("req2").elapsed()]
-    print(latencies1)
-    print(latencies2)
-    print(np.mean(latencies1))
-    print(np.mean(latencies2))
+    latencies = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
+                              lambda: infer_step2(params2, batch2, rngkey2)], 
+                              timers)
     print_used_time("Benchmark")
    
     # Compute statistics
     tflops, parameter_count = compute_gpt_inference_statistics(
-        benchmark_case, latencies1, virtual_mesh.num_devices_per_host)
+        benchmark_case, latencies, virtual_mesh.num_devices_per_host)
     metadata = {
-        "latencies": latencies1,
+        "latencies": latencies,
         "compilation_times": 0,
     }
-    return parameter_count, 0, latencies1, tflops, metadata
+    return parameter_count, 0, latencies, tflops, metadata
