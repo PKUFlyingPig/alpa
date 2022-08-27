@@ -55,7 +55,9 @@ class PossoinWorkLoad:
     @classmethod
     def load(cls, filename: str):
         with open(filename, 'rb') as f:
-            return pickle.load(f)
+            workload = pickle.load(f)
+        print(f"Load the {workload.workload_name} workload with {len(workload.model_ids)} requests.")
+        return workload
 
     def run(self, callbacks, timers, tolerance: float = 0.005):
         """
@@ -89,6 +91,8 @@ class PossoinWorkLoad:
                 request_id += 1
             time.sleep(tolerance)
             now = time.time()
+        # handle the last request
+        wait_thread = threading.Thread(target=wait_for_completion, args=(loss, request_id))
         
         # join the waiting threads
         for thd in waiting_threads:
@@ -100,7 +104,7 @@ class PossoinWorkLoad:
         
         # save the result
         latencies = []
-        for i in range(request_id):
+        for i in range(request_id + 1):
             latencies.append(timers(f"req{i}").elapsed())
         with open(f"{self.workload_name}_latencies", 'wb') as f:
             pickle.dump(latencies, f)

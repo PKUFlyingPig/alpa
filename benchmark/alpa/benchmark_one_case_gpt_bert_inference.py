@@ -16,6 +16,7 @@ from benchmark_parallel_utils import (
     get_pipeshard_parallel_method,
     compile_and_benchmark_pipeshard_inference_executable,
     compile_pipeshard_inference_executable)
+from generate_workload import PossoinWorkLoad
 
 def create_infer_params_aval(rngkey, model, batch, model_type):
     if model_type == "gpt_no_embedding_inference":
@@ -183,13 +184,11 @@ def benchmark_gpt_inference_internal(model_type,
     global_config.pipeline_check_alive = False
 
     # Load workload and Benchmark
-    #workload_name = "Even_10Hz_20s"
+    workload_name = "Even_5Hz_20s"
     #workload_name = "Even_10Hz_20s"
     #workload_name = "Skewed8to2_5Hz_20s"
-    workload_name = "Skewed8to2_10Hz_20s"
-    with open(workload_name, 'rb') as f:
-        workload = pickle.load(f)
-
+    #workload_name = "Skewed8to2_10Hz_20s"
+    workload = PossoinWorkLoad.load(workload_name)
     latencies = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
                               lambda: infer_step2(params2, batch2, rngkey2)], 
                               timers)
