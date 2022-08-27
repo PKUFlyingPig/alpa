@@ -92,6 +92,9 @@ class PossoinWorkLoad:
             time.sleep(tolerance)
             now = time.time()
         # handle the last request
+        # timers(f"req{request_id}").start()
+        # loss = callbacks[next_id]()
+        # loss.get_remote_buffers_async()
         wait_thread = threading.Thread(target=wait_for_completion, args=(loss, request_id))
         
         # join the waiting threads

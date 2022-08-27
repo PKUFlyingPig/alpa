@@ -194,7 +194,8 @@ def benchmark_gpt_inference_internal(model_type,
     #workload_name = "Even_5Hz_20s"
     #workload_name = "Even_10Hz_20s"
     #workload_name = "Skewed8to2_5Hz_20s"
-    workload_name = "Skewed8to2_10Hz_20s"
+    #workload_name = "Skewed8to2_10Hz_20s"
+    workload_name = "Skewed8to2_20Hz_20s"
     workload = PossoinWorkLoad.load(workload_name)
     latencies = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
                               lambda: infer_step2(params2, batch2, rngkey2)], 
