@@ -9,7 +9,7 @@ from generate_workload import PossoinWorkLoad
 workload_filename = "Skewed8to2_10Hz_20s"
 
 def load_data():
-    latency_filename = workload_filename + "_latencies"
+    latency_filename = workload_filename + "_latencies_baseline"
     with open(latency_filename, "rb") as f:
         latencies = pickle.load(f)
     workload = PossoinWorkLoad.load(workload_filename)
@@ -27,11 +27,11 @@ def plot_cdf(data1, data2, figname):
     plt.legend()
     plt.ylabel("CDF")
     plt.xlabel("latency(s)")
-    plt.title("Latency CDF for " + workload_filename)
+    plt.title("Latency CDF for " + workload_filename + "(Baseline)")
     # savefig
     plt.savefig(figname)
 
 workload, latencies = load_data()
 model0_latencies = [latencies[i] for i, model_id in enumerate(workload.model_ids) if model_id == 0]
 model1_latencies = [latencies[i] for i, model_id in enumerate(workload.model_ids) if model_id == 1]
-plot_cdf(model0_latencies, model1_latencies, workload_filename + "_cdf")
+plot_cdf(model0_latencies, model1_latencies, workload_filename + "_cdf_baseline")

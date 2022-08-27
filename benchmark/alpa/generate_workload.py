@@ -106,7 +106,7 @@ class PossoinWorkLoad:
         latencies = []
         for i in range(request_id + 1):
             latencies.append(timers(f"req{i}").elapsed())
-        with open(f"{self.workload_name}_latencies", 'wb') as f:
+        with open(f"{self.workload_name}_latencies_baseline", 'wb') as f:
             pickle.dump(latencies, f)
         return latencies
 

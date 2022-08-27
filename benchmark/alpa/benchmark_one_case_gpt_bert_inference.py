@@ -144,50 +144,57 @@ def benchmark_gpt_inference_internal(model_type,
                                      num_hosts,
                                      num_devices_per_host,
                                      profile_driver_time=False):
-    # Connect to the cluster
-    virtual_mesh = get_global_cluster().get_virtual_physical_mesh(
-        host_ids=list(range(num_hosts)),
-        num_devices_per_host=num_devices_per_host)
-    set_global_virtual_physical_mesh(virtual_mesh)
 
     (method, _, add_manual_layer_marker,
      num_manual_pipeline_stages) = get_pipeshard_parallel_method(
          benchmark_case,
-         virtual_mesh.num_devices_per_host,
+         num_devices_per_host,
          pipeline_schedule="inference")
 
+    # Slice virtual_mesh1 for model1
+    virtual_mesh1 = get_global_cluster().get_virtual_physical_mesh(
+        host_ids=list(range(num_hosts)),
+        num_devices_per_host=num_devices_per_host)
+    set_global_virtual_physical_mesh(virtual_mesh1)
+    # compile
     model1, params1, batch1, rngkey1 = prepare_gpt_inference_input_and_model(
         model_type, benchmark_case, add_manual_layer_marker,
         num_manual_pipeline_stages)
-    model2, params2, batch2, rngkey2 = prepare_gpt_inference_input_and_model(
-        model_type, benchmark_case, add_manual_layer_marker,
-        num_manual_pipeline_stages)
-
     infer_step1 = get_infer_step(method, model1, model_type)
-    infer_step2 = get_infer_step(method, model2, model_type)
-
     exec1, params1 = compile_pipeshard_inference_executable(
                         benchmark_case.parallel_mode,
                         infer_step1,
                         params1, (batch1, rngkey1))
+    # warmup for model1
+    _ = infer_step1(params1, batch1, rngkey1)
+    exec1.sync()
+
+    # Slice virtual_mesh2 for model2
+    virtual_mesh2 = get_global_cluster().get_virtual_physical_mesh(
+        host_ids=list(range(num_hosts)),
+        num_devices_per_host=num_devices_per_host)
+    set_global_virtual_physical_mesh(virtual_mesh2)
+    # compile
+    model2, params2, batch2, rngkey2 = prepare_gpt_inference_input_and_model(
+        model_type, benchmark_case, add_manual_layer_marker,
+        num_manual_pipeline_stages)
+    infer_step2 = get_infer_step(method, model2, model_type)
     exec2, params2 = compile_pipeshard_inference_executable(
                         benchmark_case.parallel_mode,
                         infer_step2,
                         params2, (batch2, rngkey2))
-
-    # warmup
+    # warmup for model2
     _ = infer_step1(params1, batch1, rngkey1)
-    _ = infer_step1(params1, batch1, rngkey1)
-    exec1.sync()
     exec2.sync()
+
     # no synchronization
     global_config.pipeline_check_alive = False
 
     # Load workload and Benchmark
-    workload_name = "Even_5Hz_20s"
+    #workload_name = "Even_5Hz_20s"
     #workload_name = "Even_10Hz_20s"
     #workload_name = "Skewed8to2_5Hz_20s"
-    #workload_name = "Skewed8to2_10Hz_20s"
+    workload_name = "Skewed8to2_10Hz_20s"
     workload = PossoinWorkLoad.load(workload_name)
     latencies = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
                               lambda: infer_step2(params2, batch2, rngkey2)], 
@@ -196,7 +203,7 @@ def benchmark_gpt_inference_internal(model_type,
    
     # Compute statistics
     tflops, parameter_count = compute_gpt_inference_statistics(
-        benchmark_case, latencies, virtual_mesh.num_devices_per_host)
+        benchmark_case, latencies, num_devices_per_host)
     metadata = {
         "latencies": latencies,
         "compilation_times": 0,
