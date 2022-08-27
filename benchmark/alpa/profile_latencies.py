@@ -5,8 +5,8 @@ from generate_workload import PossoinWorkLoad
 
 #workload_filename = "Even_5Hz_20s"
 #workload_filename = "Even_10Hz_20s"
-#workload_filename = "Skewed8to2_5Hz_20s"
-workload_filename = "Skewed8to2_10Hz_20s"
+workload_filename = "Skewed8to2_5Hz_20s"
+#workload_filename = "Skewed8to2_10Hz_20s"
 
 def load_data():
     latency_filename = workload_filename + "_latencies_baseline"
@@ -34,4 +34,10 @@ def plot_cdf(data1, data2, figname):
 workload, latencies = load_data()
 model0_latencies = [latencies[i] for i, model_id in enumerate(workload.model_ids) if model_id == 0]
 model1_latencies = [latencies[i] for i, model_id in enumerate(workload.model_ids) if model_id == 1]
-plot_cdf(model0_latencies, model1_latencies, workload_filename + "_cdf_baseline")
+#plot_cdf(model0_latencies, model1_latencies, workload_filename + "_cdf_baseline")
+print(f"mean latency: {np.mean(latencies):.3f}ms")
+print(f"90% tail latency: {np.quantile(latencies, 0.9):.3f}ms")
+print(f"model0 mean latency: {np.mean(model0_latencies):.3f}ms")
+print(f"model0 90% tail latency: {np.quantile(model0_latencies, 0.9):.3f}ms")
+print(f"model1 mean latency: {np.mean(model1_latencies):.3f}ms")
+print(f"model1 90% tail latency: {np.quantile(model1_latencies, 0.9):.3f}ms")
