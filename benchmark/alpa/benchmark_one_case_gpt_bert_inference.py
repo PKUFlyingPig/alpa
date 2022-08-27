@@ -4,9 +4,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from alpa import (parallelize, get_global_cluster,
-                  set_global_virtual_physical_mesh)
+                  set_global_virtual_physical_mesh, global_config)
 from alpa.model.bert_model import BertConfig, FlaxBertLayerCollection
 from alpa.model.gpt_model import FlaxGPTForLMModule
+from alpa.timer import timers
 from alpa.util import print_used_time
 
 from util import compute_gpt_parameter_count, compute_gpt_tflops
@@ -14,7 +15,6 @@ from benchmark_parallel_utils import (
     get_pipeshard_parallel_method,
     compile_and_benchmark_pipeshard_inference_executable,
     compile_pipeshard_inference_executable)
-
 
 def create_infer_params_aval(rngkey, model, batch, model_type):
     if model_type == "gpt_no_embedding_inference":
@@ -173,15 +173,33 @@ def benchmark_gpt_inference_internal(model_type,
                         infer_step2,
                         params2, (batch2, rngkey2))
 
-    for i in range(3):
-        print(f"Iteration {i} ...")
-        _ = infer_step1(params1, batch1, rngkey1)
-        _ = infer_step2(params2, batch2, rngkey2)
-        exec1.sync()
-        exec2.sync()
+    # warmup
+    _ = infer_step1(params1, batch1, rngkey1)
+    _ = infer_step1(params1, batch1, rngkey1)
+    exec1.sync()
+    exec2.sync()
+    # no synchronization
+    global_config.pipeline_check_alive = False
 
-    latencies1 = exec1.get_execution_time_costs()[1:]
-    latencies2 = exec2.get_execution_time_costs()[1:]
+    # Load workload
+
+    for i in range(1):
+        print(f"Iteration {i} ...")
+        timers("req1").start()
+        timers("req2").start()
+        loss1 = infer_step1(params1, batch1, rngkey1)
+        loss1.get_remote_buffers_async()
+        loss2 = infer_step2(params2, batch2, rngkey2)
+        loss2.get_remote_buffers_async()
+        print_used_time(f"time{i}")
+    
+    _ = loss1._value
+    timers("req1").stop()
+    _ = loss2._value
+    timers("req2").stop()
+
+    latencies1 = [timers("req1").elapsed()]
+    latencies2 = [timers("req2").elapsed()]
     print(latencies1)
     print(latencies2)
     print(np.mean(latencies1))
