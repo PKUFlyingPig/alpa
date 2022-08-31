@@ -5,9 +5,9 @@ from generate_workload import PossoinWorkLoad
 
 #workload_filename = "Even_5Hz_20s"
 #workload_filename = "Even_10Hz_20s"
-#workload_filename = "Skewed8to2_5Hz_20s"
+workload_filename = "Skewed8to2_5Hz_20s"
 #workload_filename = "Skewed8to2_10Hz_20s"
-workload_filename = "Skewed8to2_20Hz_20s"
+#workload_filename = "Skewed8to2_20Hz_20s"
 
 def load_data():
     parallel_latency_filename = workload_filename + "_latencies"
@@ -23,19 +23,23 @@ def plot_cdf(latencies, is_baseline):
     model0_latencies = [latencies[i] for i, model_id in enumerate(workload.model_ids) if model_id == 0]
     model1_latencies = [latencies[i] for i, model_id in enumerate(workload.model_ids) if model_id == 1]
     # sort data
-    x1, x2 = np.sort(model0_latencies), np.sort(model1_latencies)
+    x1, x2, x = np.sort(model0_latencies), np.sort(model1_latencies), np.sort(latencies)
     # calculate CDF values
-    y1, y2 = 1. * np.arange(len(model0_latencies)) / (len(model0_latencies) - 1), 1. * np.arange(len(model1_latencies)) / (len(model1_latencies) - 1)
+    y1, y2, y = 1. * np.arange(len(model0_latencies)) / (len(model0_latencies) - 1), \
+                1. * np.arange(len(model1_latencies)) / (len(model1_latencies) - 1), \
+                1. * np.arange(len(latencies)) / (len(latencies) - 1),
     # plot CDF
     if is_baseline:
-        plt.plot(x1, y1, "--", color="c", label="model0 baseline")
-        plt.plot(x2, y2, "--", color="orange", label="model1 baseline")
+        plt.plot(x1, y1, ":", color="c", label="model0 baseline")
+        plt.plot(x2, y2, "-.", color="c", label="model1 baseline")
+        plt.plot(x, y, "-", color="c", label="overall baseline")
     else:
-        plt.plot(x1, y1, "-", color="c", label="model0 parallel")
-        plt.plot(x2, y2, "-", color="orange", label="model1 parallel")
+        plt.plot(x1, y1, ":", color="orange", label="model0 parallel")
+        plt.plot(x2, y2, "-.", color="orange", label="model1 parallel")
+        plt.plot(x, y, "-", color="orange", label="overall parallel")
     # print the statistics
+    print("---------------------------------------")
     if is_baseline:
-        print("---------------------------------------")
         print("Baseline latency statistics:")
     else:
         print("Parallel latency statistics:") 
@@ -48,8 +52,8 @@ def plot_cdf(latencies, is_baseline):
 
 workload, parallel_latencies, baseline_latencies = load_data()
 plt.figure()
-plot_cdf(parallel_latencies, False)
 plot_cdf(baseline_latencies, True)
+plot_cdf(parallel_latencies, False)
 plt.legend()
 plt.ylabel("CDF")
 plt.xlabel("Latency(s)")
