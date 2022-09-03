@@ -9,8 +9,8 @@ workload_filename = "Skewed8to2_5Hz_20s"
 #workload_filename = "Skewed8to2_10Hz_20s"
 #workload_filename = "Skewed8to2_20Hz_20s"
 
-def load_data():
-    parallel_latency_filename = workload_filename + "_latencies"
+def load_data(parallel_method):
+    parallel_latency_filename = workload_filename + f"_latencies_{parallel_method}"
     baseline_latency_filename = workload_filename + "_latencies_baseline"
     with open(parallel_latency_filename, "rb") as f:
         parallel_latencies = pickle.load(f)
@@ -50,7 +50,9 @@ def plot_cdf(latencies, is_baseline):
     print(f"model1 mean latency: {np.mean(model1_latencies):.3f}s")
     print(f"model1 90% tail latency: {np.quantile(model1_latencies, 0.9):.3f}s")
 
-workload, parallel_latencies, baseline_latencies = load_data()
+#parallel_method = "operator"
+parallel_method = "pipeline"
+workload, parallel_latencies, baseline_latencies = load_data(parallel_method)
 plt.figure()
 plot_cdf(baseline_latencies, True)
 plot_cdf(parallel_latencies, False)
@@ -60,6 +62,6 @@ plt.xlabel("Latency(s)")
 plt.title("Latency CDF for " + workload_filename)
 
 # savefig
-plt.savefig(workload_filename + "_cdf_overall")
+plt.savefig(workload_filename + f"_cdf_{parallel_method}")
 
 

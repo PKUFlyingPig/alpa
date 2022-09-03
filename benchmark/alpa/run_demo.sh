@@ -1,0 +1,1 @@
+python3 benchmark.py --suite gpt_inference.profile --num-hosts 1 --num-devices-per-host 2
