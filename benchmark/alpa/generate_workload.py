@@ -1,4 +1,5 @@
 from copy import deepcopy
+import csv
 from typing import List
 import numpy as np
 from numpy.random import choice, exponential
@@ -49,15 +50,47 @@ class PossoinWorkLoad:
             plt.savefig(self.workload_name)
     
     def save(self, filename: str):
-        with open(filename, 'wb') as f:
-            pickle.dump(self, f)
+        """
+        Save the workload to a csv file.
+            First row is metadata. (model_num, tot_arrival_rate, proportions, duration, SLOs, workload_name)
+            From second row to the end are requests info. (model_id, arrive_timestamp)
+        """
+        with open(filename, 'w', newline='') as workload_file:
+            writer = csv.writer(workload_file)
+            # metadata
+            writer.writerow([self.model_num, self.tot_arrival_rate, self.proportions, self.duration, self.SLOs, self.workload_name])
+            # request model id, arrival timestamp
+            for model_id, arrive_time in zip(self.model_ids, self.arrive_times):
+                writer.writerow([model_id, arrive_time])
 
     @classmethod
     def load(cls, filename: str):
-        with open(filename, 'rb') as f:
-            workload = pickle.load(f)
-        print(f"Load the {workload.workload_name} workload with {len(workload.model_ids)} requests.")
-        return workload
+        """
+        Load the workload from a csv file.
+            First row is metadata. (model_num, tot_arrival_rate, proportions, duration, SLOs, workload_name)
+            From second row to the end are requests info. (model_id, arrive_timestamp)
+        """
+        with open(filename, 'r', newline='') as workload_file:
+            reader = csv.reader(workload_file)
+            # first row is metadata
+            model_num, tot_arrival_rate, proportions, duration, SLOs, workload_name = next(reader)
+            # request model id, arrival timestamp
+            model_ids, arrive_times = [], []
+            for model_id, arrive_time in reader:
+                model_ids.append(int(model_id))
+                arrive_times.append(float(arrive_time))
+            return cls(int(model_num), float(tot_arrival_rate), eval(proportions), float(duration), eval(SLOs), workload_name, model_ids, arrive_times)
+    
+    # def save(self, filename: str):
+    #     with open(filename, 'wb') as f:
+    #         pickle.dump(self, f)
+
+    # @classmethod
+    # def load(cls, filename: str):
+    #     with open(filename, 'rb') as f:
+    #         workload = pickle.load(f)
+    #     print(f"Load the {workload.workload_name} workload with {len(workload.model_ids)} requests.")
+    #     return workload
 
     def run(self, callbacks, timers, tolerance: float = 0.005):
         """
