@@ -1,8 +1,9 @@
 """Benchmark one case of inter-op + intra-op parallelism."""
+import json
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pickle
 
 from alpa import (parallelize, get_global_cluster,
                   set_global_virtual_physical_mesh, global_config)
@@ -137,14 +138,22 @@ def compute_gpt_inference_statistics(benchmark_case, latencies, num_devices):
                                                   vocab_size)
     return tflops, parameter_count
 
-
+BASELINE = True
 def benchmark_gpt_inference_internal(model_type,
                                      benchmark_case,
                                      niter,
                                      num_hosts,
                                      num_devices_per_host,
                                      profile_driver_time=False):
+    if BASELINE:
+        benchmark_baseline_demo(model_type, benchmark_case, num_hosts, num_devices_per_host)
+    else:
+        pass
 
+def benchmark_baseline_demo(model_type,
+                            benchmark_case,
+                            num_hosts,
+                            num_devices_per_host):
     (method, _, add_manual_layer_marker,
      num_manual_pipeline_stages) = get_pipeshard_parallel_method(
          benchmark_case,
@@ -184,30 +193,60 @@ def benchmark_gpt_inference_internal(model_type,
                         infer_step2,
                         params2, (batch2, rngkey2))
     # warmup for model2
-    _ = infer_step1(params1, batch1, rngkey1)
+    _ = infer_step2(params1, batch1, rngkey1)
     exec2.sync()
 
     # no synchronization
     global_config.pipeline_check_alive = False
 
     # Load workload and Benchmark
-    #workload_name = "Even_5Hz_20s"
-    #workload_name = "Even_10Hz_20s"
-    #workload_name = "Skewed8to2_5Hz_20s"
-    #workload_name = "Skewed8to2_10Hz_20s"
-    #workload_name = "Skewed8to2_20Hz_20s"
-    workload_name = "test_workload_8to2_10Hz_20s"
+    # workload_name = "test_workload_8to2_10Hz_20s"
+    workload_name = "test_workload_8to2_6.667Hz_20s"
     workload = PossoinWorkLoad.load(workload_name)
-    latencies = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
+    l0, l1 = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
                               lambda: infer_step2(params2, batch2, rngkey2)], 
                               timers)
+    start_times1, stop_times1 = exec1.get_execution_timestamps()
+    start_times2, stop_times2 = exec2.get_execution_timestamps()
+    # Baseline config has only one pipeline stage
+    assert len(start_times1) == len(stop_times1) == 1
+    s0, e0 = start_times1[0], stop_times1[0]
+    s1, e1 = start_times2[0], stop_times2[0]
+    # drop timestamps for warmup
+    s0.pop(0)
+    e0.pop(0)
+    s1.pop(0)
+    e1.pop(0)
+    print(f"trace_len:{len(l0)}, real_len:{len(s0)}")
+    print(f"trace_len:{len(l1)}, real_len:{len(s1)}")
+    start_timestamp = min(s0[0], s1[0])
+    s0 = [t - start_timestamp for t in s0]
+    e0 = [t - start_timestamp for t in e0]
+    s1 = [t - start_timestamp for t in s1]
+    e1 = [t - start_timestamp for t in e1]
+    rq_ids0 = [i for i, model_id in enumerate(workload.model_ids) if model_id == 0]
+    rq_ids1 = [i for i, model_id in enumerate(workload.model_ids) if model_id == 1]
+    arrive_0 = [t for i, t in zip(workload.model_ids, workload.arrive_times) if i == 0]
+    arrive_1 = [t for i, t in zip(workload.model_ids, workload.arrive_times) if i == 1]
+    latencies0 = [e - a for a, e in zip(arrive_0, e0)]
+    latencies1 = [e - a for a, e in zip(arrive_1, e1)]
+    # compare the e2e latency experienced in driver with the one logged by the timers on meshhostwork
+    shift0 = [abs(x - y) for x, y in zip(latencies0, l0)]
+    shift1 = [abs(x - y) for x, y in zip(latencies1, l1)]
+    print(max(shift0))
+    print(max(shift1))
+    # dump for comparison with simulator
+    with open(f"{workload.workload_name}_baseline_trace.json", 'w') as f:
+            json.dump({0: {"rq_id": rq_ids0, "arrive": arrive_0, "start": s0, "end": e0, "latency": l0}, 
+                       1: {"rq_id": rq_ids1, "arrive": arrive_1, "start": s1, "end": e1, "latency": l1}}, f)
     print_used_time("Benchmark")
    
     # Compute statistics
     tflops, parameter_count = compute_gpt_inference_statistics(
-        benchmark_case, latencies, num_devices_per_host)
+        benchmark_case, latencies0, num_devices_per_host)
     metadata = {
-        "latencies": latencies,
+        "latencies": latencies0,
         "compilation_times": 0,
     }
-    return parameter_count, 0, latencies, tflops, metadata
+    return parameter_count, 0, latencies0, tflops, metadata
+

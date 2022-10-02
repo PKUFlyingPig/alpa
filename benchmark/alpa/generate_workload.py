@@ -1,12 +1,13 @@
 from copy import deepcopy
 import csv
+import json
+import threading
+import time
 from typing import List
+
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.random import choice, exponential
-import matplotlib.pyplot as plt
-import pickle
-import time
-import threading
 
 class WorkLoad:
     """
@@ -69,7 +70,7 @@ class WorkLoad:
         request_id = 0
         now = start = time.time()
         # send requests
-        while len(model_ids) > 0:
+        while True:
             if start + next_arrive_time <= now:
                 request_times.append(now - start)
                 timers(f"req{request_id}").start()
@@ -79,16 +80,13 @@ class WorkLoad:
                 wait_thread = threading.Thread(target=wait_for_completion, args=(loss, request_id))
                 wait_thread.start()
                 waiting_threads.append(wait_thread)
+                if len(model_ids) == 0:
+                    break
                 next_id, next_arrive_time = model_ids.pop(0), arrive_times.pop(0)
                 request_id += 1
             time.sleep(tolerance)
             now = time.time()
-        # handle the last request
-        # timers(f"req{request_id}").start()
-        # loss = callbacks[next_id]()
-        # loss.get_remote_buffers_async()
-        wait_thread = threading.Thread(target=wait_for_completion, args=(loss, request_id))
-        
+       
         # join the waiting threads
         for thd in waiting_threads:
             thd.join()
@@ -97,13 +95,15 @@ class WorkLoad:
         for t_ref, t_req in zip(self.arrive_times, request_times):
             assert(t_ref - t_req <= tolerance)
         
-        # save the result
-        latencies = []
+        # collect the result
+        latencies0 = []
+        latencies1 = []
         for i in range(request_id + 1):
-            latencies.append(timers(f"req{i}").elapsed())
-        with open(f"{self.workload_name}_latencies_baseline", 'wb') as f:
-            pickle.dump(latencies, f)
-        return latencies
+            if self.model_ids[i] == 0:
+                latencies0.append(timers(f"req{i}").elapsed())
+            else:
+                latencies1.append(timers(f"req{i}").elapsed())
+        return latencies0, latencies1
 
 
 class PossoinWorkLoad(WorkLoad):
@@ -190,4 +190,4 @@ if __name__ == "__main__":
     # even_workload.plot(0.5)
     # skew_workload = generate_workload(2, 10, [0.8, 0.2], 20, "Skewed8to2_10Hz_20s")
     # skew_workload.plot(0.5)
-    skew_workload = generate_workload(2, 10, [0.8, 0.2], 20, [0.25, 0.25], "test_workload_8to2_10Hz_20s")
+    skew_workload = generate_workload(2, 6.667, [0.8, 0.2], 20, [0.25, 0.25], "test_workload_8to2_6.667Hz_20s.json")

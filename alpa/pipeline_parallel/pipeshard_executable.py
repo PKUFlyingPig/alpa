@@ -252,6 +252,16 @@ class PipeshardDriverExecutable:
         return tree_unflatten(self.out_tree, out)
 
     ##### Profiling and Debugging Related Functions #####
+    def get_execution_timestamps(self):
+        """Get the start and stop timestamp for each request"""
+        start_times_list = []
+        stop_times_list = []
+        for mesh in self.mesh_group:
+            timer = mesh.get_remote_timer("compute")
+            start_times_list.append(timer.start_times)
+            stop_times_list.append(timer.stop_times)
+        return start_times_list, stop_times_list
+
     def get_execution_time_costs(self,
                                  timer_name="overall",
                                  return_all_costs=False):
@@ -467,7 +477,7 @@ class PipeshardMeshWorkerExecuable:
         sync_func = self.worker.sync if sync_for_timer else None
 
         # Execute
-        timers("overall").start(sync_func=sync_func)
+        timers("overall").start()
         for instruction in self.instructions:
             # print(f"memory_allocated: "
             #       f"{self.worker.get_memory_allocated()/1024**3:.3f} GB  "
@@ -480,7 +490,7 @@ class PipeshardMeshWorkerExecuable:
                                            instruction.input_uuids,
                                            instruction.output_uuids,
                                            **instruction.opaques["kwargs"])
-                timers("compute").suspend()
+                timers("compute").suspend(sync_func=sync_func)
             elif instruction.opcode == PipelineInstType.SEND:
                 timers("resharding_send").start()
                 self.worker.run_resharding_send_task(instruction.task_uuid,
@@ -515,7 +525,7 @@ class PipeshardMeshWorkerExecuable:
                 "resharding_broadcast", "free"
         ]:
             if timer_name in timers:
-                timers(timer_name).stop()
+                timers(timer_name).stop(sync_func=sync_func)
                 # timers(timer_name).log(mode="sum")
                 # timers(timer_name).reset()
         timers("overall").stop(sync_func=sync_func)

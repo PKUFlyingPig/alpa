@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -167,3 +168,58 @@ def compute_moe_parameter_count(num_layers,
     else:
         half = num_layers / 2
         return half * pure_transformer + half * moe_transformer + embedding
+
+def dump_chrome_tracing(traces, dumpfile: str):
+    color_list = [
+        "thread_state_uninterruptible",
+        "thread_state_iowait",
+        "thread_state_running",
+        "thread_state_runnable",
+        "thread_state_unknown",
+        "background_memory_dump",
+        "light_memory_dump",
+        "detailed_memory_dump",
+        "vsync_highlight_color",
+        "generic_work",
+        "good",
+        "bad",
+        "terrible",
+        "yellow",
+        "olive",
+        "rail_response",
+        "rail_animation",
+        "rail_idle",
+        "rail_load",
+        "startup",
+        "heap_dump_stack_frame",
+        "heap_dump_object_type",
+        "heap_dump_child_node_arrow",
+        "cq_build_running",
+        "cq_build_passed",
+        "cq_build_failed",
+        "cq_build_attempt_runnig",
+        "cq_build_attempt_passed",
+        "cq_build_attempt_failed",
+    ]
+    def get_color(i):
+        return color_list[i % len(color_list)]
+
+    slot_list = []
+    for model_id, trace in traces.items():
+        for rq_id, start, end in zip(trace["rq_id"], trace["start"], trace["end"]):
+            slot = {"name": f"r{rq_id}",
+                    "cat": "",
+                    "ph": "X",
+                    "pid": int(model_id),
+                    "tid": 0,
+                    "ts": float(start) * 1e6,
+                    "dur": float(end - start) * 1e6,
+                    "cname": get_color(rq_id)}
+            slot_list.append(slot)
+
+    os.makedirs(os.path.dirname(dumpfile), exist_ok=True)
+    with open(dumpfile, "w") as fout:
+        fout.write(json.dumps({
+            "traceEvents": slot_list,
+            "displayTimeUnit": "ms",
+        }))
