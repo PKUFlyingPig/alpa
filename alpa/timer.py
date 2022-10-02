@@ -19,7 +19,7 @@ class _Timer:
         self.accum_cost = 0.0
 
         # start-stop time stamp pairs
-        self.stopped = True
+        self.stopped = True # started=False does not mean stopped=True because it may be suspended
         self.start_times = []
         self.stop_times = []
 

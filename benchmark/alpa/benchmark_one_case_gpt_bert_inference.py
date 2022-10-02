@@ -12,7 +12,7 @@ from alpa.model.gpt_model import FlaxGPTForLMModule
 from alpa.timer import timers
 from alpa.util import print_used_time
 
-from util import compute_gpt_parameter_count, compute_gpt_tflops
+from util import compute_gpt_parameter_count, compute_gpt_tflops, dump_chrome_tracing
 from benchmark_parallel_utils import (
     get_pipeshard_parallel_method,
     compile_and_benchmark_pipeshard_inference_executable,
@@ -146,7 +146,7 @@ def benchmark_gpt_inference_internal(model_type,
                                      num_devices_per_host,
                                      profile_driver_time=False):
     if BASELINE:
-        benchmark_baseline_demo(model_type, benchmark_case, num_hosts, num_devices_per_host)
+        return benchmark_baseline_demo(model_type, benchmark_case, num_hosts, num_devices_per_host)
     else:
         pass
 
@@ -200,7 +200,6 @@ def benchmark_baseline_demo(model_type,
     global_config.pipeline_check_alive = False
 
     # Load workload and Benchmark
-    # workload_name = "test_workload_8to2_10Hz_20s"
     workload_name = "test_workload_8to2_6.667Hz_20s"
     workload = PossoinWorkLoad.load(workload_name)
     l0, l1 = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
@@ -231,14 +230,18 @@ def benchmark_baseline_demo(model_type,
     latencies0 = [e - a for a, e in zip(arrive_0, e0)]
     latencies1 = [e - a for a, e in zip(arrive_1, e1)]
     # compare the e2e latency experienced in driver with the one logged by the timers on meshhostwork
+    # it should be around 10-20ms according to the communication && ray overhead 
     shift0 = [abs(x - y) for x, y in zip(latencies0, l0)]
     shift1 = [abs(x - y) for x, y in zip(latencies1, l1)]
     print(max(shift0))
     print(max(shift1))
-    # dump for comparison with simulator
+    # dump trace for comparison with simulator
     with open(f"{workload.workload_name}_baseline_trace.json", 'w') as f:
-            json.dump({0: {"rq_id": rq_ids0, "arrive": arrive_0, "start": s0, "end": e0, "latency": l0}, 
-                       1: {"rq_id": rq_ids1, "arrive": arrive_1, "start": s1, "end": e1, "latency": l1}}, f)
+            traces = {0: {"rq_id": rq_ids0, "arrive": arrive_0, "start": s0, "end": e0, "latency": l0}, 
+                      1: {"rq_id": rq_ids1, "arrive": arrive_1, "start": s1, "end": e1, "latency": l1}}
+            json.dump(traces, f)
+    # dump chrome trace for visualization
+    dump_chrome_tracing(traces, f"./chrome_trace/{workload.workload_name}_baseline_chrometrace.json")
     print_used_time("Benchmark")
    
     # Compute statistics

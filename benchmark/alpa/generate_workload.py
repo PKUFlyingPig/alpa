@@ -52,7 +52,7 @@ class WorkLoad:
         else:
             plt.savefig(self.workload_name)
  
-    def run(self, callbacks, timers, tolerance: float = 0.005):
+    def run(self, callbacks, timers, tolerance: float = 0.001):
         """
         Run the workload with the given callbacks.
         @param callbacks: The list of callbacks, each corresponds to a model.
@@ -72,8 +72,8 @@ class WorkLoad:
         # send requests
         while True:
             if start + next_arrive_time <= now:
-                request_times.append(now - start)
                 timers(f"req{request_id}").start()
+                request_times.append(now - start)
                 loss = callbacks[next_id]()
                 loss.get_remote_buffers_async()
                 # spawn a thread to wait for completion
@@ -84,7 +84,6 @@ class WorkLoad:
                     break
                 next_id, next_arrive_time = model_ids.pop(0), arrive_times.pop(0)
                 request_id += 1
-            time.sleep(tolerance)
             now = time.time()
        
         # join the waiting threads
@@ -92,8 +91,9 @@ class WorkLoad:
             thd.join()
 
         # tolerance check
-        for t_ref, t_req in zip(self.arrive_times, request_times):
-            assert(t_ref - t_req <= tolerance)
+        assert len(self.arrive_times) == len(request_times)
+        shift = [abs(t_ref - t_req) for t_ref, t_req in zip(self.arrive_times, request_times)]
+        assert(sum(shift) / len(self.arrive_times) <= tolerance)
         
         # collect the result
         latencies0 = []
