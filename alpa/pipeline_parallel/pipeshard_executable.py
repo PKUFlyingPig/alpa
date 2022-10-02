@@ -1,6 +1,7 @@
 """The dirver part and worker part of a pipeshard executable."""
 import logging
 import os
+from sqlite3 import Timestamp
 import time
 from typing import Optional, Sequence
 
@@ -252,15 +253,20 @@ class PipeshardDriverExecutable:
         return tree_unflatten(self.out_tree, out)
 
     ##### Profiling and Debugging Related Functions #####
-    def get_execution_timestamps(self):
-        """Get the start and stop timestamp for each request"""
-        start_times_list = []
-        stop_times_list = []
+    def get_execution_info(self):
+        """Get the execution information of each request's each stage.
+            return a list, each element corresponds to a single stage, and is 
+            a list of (start, stop, node_ids, devices) tuple, each corresponds to 
+            a single request. 
+        """
+        all_stages_info_list = []
         for mesh in self.mesh_group:
             timer = mesh.get_remote_timer("compute")
-            start_times_list.append(timer.start_times)
-            stop_times_list.append(timer.stop_times)
-        return start_times_list, stop_times_list
+            per_stage_info_list = []
+            for s, e in zip(timer.start_times, timer.stop_times):
+                per_stage_info_list.append((s, e, mesh.host_ids, mesh.devices))
+            all_stages_info_list.append(per_stage_info_list)
+        return all_stages_info_list
 
     def get_execution_time_costs(self,
                                  timer_name="overall",
