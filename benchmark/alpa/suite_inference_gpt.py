@@ -37,10 +37,10 @@ def get_config(model_config,
 
 
 # baseline config
-get_config(gpt_specs["2.6B"], [1], [1], [1], [1], [1])
+#get_config(gpt_specs["2.6B"], [1], [1], [1], [1], [1])
 
 # inter-op config 
-#get_config(gpt_specs["2.6B"], [2], [1], [1], [1], [1])
+get_config(gpt_specs["2.6B"], [2], [1], [1], [1], [1])
 
 # intra-op config
 #get_config(gpt_specs["2.6B"], [1], [1], [2], [1], [1])

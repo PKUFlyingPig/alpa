@@ -12,7 +12,7 @@ from alpa.model.gpt_model import FlaxGPTForLMModule
 from alpa.timer import timers
 from alpa.util import print_used_time
 
-from util import compute_gpt_parameter_count, compute_gpt_tflops, dump_chrome_tracing
+from util import compute_gpt_parameter_count, compute_gpt_tflops, dump_chrome_tracing, dump_demo_cluster_trace
 from benchmark_parallel_utils import (
     get_pipeshard_parallel_method,
     compile_and_benchmark_pipeshard_inference_executable,
@@ -138,7 +138,7 @@ def compute_gpt_inference_statistics(benchmark_case, latencies, num_devices):
                                                   vocab_size)
     return tflops, parameter_count
 
-BASELINE = True
+BASELINE = False
 def benchmark_gpt_inference_internal(model_type,
                                      benchmark_case,
                                      niter,
@@ -148,12 +148,13 @@ def benchmark_gpt_inference_internal(model_type,
     if BASELINE:
         return benchmark_baseline_demo(model_type, benchmark_case, num_hosts, num_devices_per_host)
     else:
-        pass
+        return benchmark_parallel_demo(model_type, benchmark_case, num_hosts, num_devices_per_host)
 
 def benchmark_baseline_demo(model_type,
                             benchmark_case,
                             num_hosts,
                             num_devices_per_host):
+    # get parallel method
     (method, _, add_manual_layer_marker,
      num_manual_pipeline_stages) = get_pipeshard_parallel_method(
          benchmark_case,
@@ -162,7 +163,7 @@ def benchmark_baseline_demo(model_type,
 
     # Slice virtual_mesh1 for model1
     virtual_mesh1 = get_global_cluster().get_virtual_physical_mesh(
-        host_ids=list(range(num_hosts)),
+        host_ids=[0],
         num_devices_per_host=num_devices_per_host)
     set_global_virtual_physical_mesh(virtual_mesh1)
     # compile
@@ -174,13 +175,14 @@ def benchmark_baseline_demo(model_type,
                         benchmark_case.parallel_mode,
                         infer_step1,
                         params1, (batch1, rngkey1))
+    exec1.mesh_group[0].devices=[[0]]
     # warmup for model1
     _ = infer_step1(params1, batch1, rngkey1)
     exec1.sync()
 
     # Slice virtual_mesh2 for model2
     virtual_mesh2 = get_global_cluster().get_virtual_physical_mesh(
-        host_ids=list(range(num_hosts)),
+        host_ids=[0],
         num_devices_per_host=num_devices_per_host)
     set_global_virtual_physical_mesh(virtual_mesh2)
     # compile
@@ -192,6 +194,7 @@ def benchmark_baseline_demo(model_type,
                         benchmark_case.parallel_mode,
                         infer_step2,
                         params2, (batch2, rngkey2))
+    exec2.mesh_group[0].devices=[[1]]
     # warmup for model2
     _ = infer_step2(params1, batch1, rngkey1)
     exec2.sync()
@@ -205,51 +208,135 @@ def benchmark_baseline_demo(model_type,
     l0, l1 = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
                               lambda: infer_step2(params2, batch2, rngkey2)], 
                               timers)
-    start_times1, stop_times1 = exec1.get_execution_timestamps()
-    start_times2, stop_times2 = exec2.get_execution_timestamps()
-    # Baseline config has only one pipeline stage
-    assert len(start_times1) == len(stop_times1) == 1
-    s0, e0 = start_times1[0], stop_times1[0]
-    s1, e1 = start_times2[0], stop_times2[0]
-    # drop timestamps for warmup
-    s0.pop(0)
-    e0.pop(0)
-    s1.pop(0)
-    e1.pop(0)
-    print(f"trace_len:{len(l0)}, real_len:{len(s0)}")
-    print(f"trace_len:{len(l1)}, real_len:{len(s1)}")
-    start_timestamp = min(s0[0], s1[0])
-    s0 = [t - start_timestamp for t in s0]
-    e0 = [t - start_timestamp for t in e0]
-    s1 = [t - start_timestamp for t in s1]
-    e1 = [t - start_timestamp for t in e1]
-    rq_ids0 = [i for i, model_id in enumerate(workload.model_ids) if model_id == 0]
-    rq_ids1 = [i for i, model_id in enumerate(workload.model_ids) if model_id == 1]
-    arrive_0 = [t for i, t in zip(workload.model_ids, workload.arrive_times) if i == 0]
-    arrive_1 = [t for i, t in zip(workload.model_ids, workload.arrive_times) if i == 1]
-    latencies0 = [e - a for a, e in zip(arrive_0, e0)]
-    latencies1 = [e - a for a, e in zip(arrive_1, e1)]
-    # compare the e2e latency experienced in driver with the one logged by the timers on meshhostwork
-    # it should be around 10-20ms according to the communication && ray overhead 
-    shift0 = [abs(x - y) for x, y in zip(latencies0, l0)]
-    shift1 = [abs(x - y) for x, y in zip(latencies1, l1)]
-    print(max(shift0))
-    print(max(shift1))
-    # dump trace for comparison with simulator
-    with open(f"{workload.workload_name}_baseline_trace.json", 'w') as f:
-            traces = {0: {"rq_id": rq_ids0, "arrive": arrive_0, "start": s0, "end": e0, "latency": l0}, 
-                      1: {"rq_id": rq_ids1, "arrive": arrive_1, "start": s1, "end": e1, "latency": l1}}
-            json.dump(traces, f)
+    exec_info0 = exec1.get_execution_info()
+    exec_info1 = exec2.get_execution_info()
+
+    # sanity check
+    assert len(exec_info0) == len(exec_info1) == num_manual_pipeline_stages
+
+    # drop warmup's execution info
+    for stage0_info, stage1_info in zip(exec_info0, exec_info1):
+        stage0_info.pop(0), stage1_info.pop(0)
+    
+    print(f"trace_len:{len(l0)}, real_len:{len(exec_info0[0])}")
+    print(f"trace_len:{len(l1)}, real_len:{len(exec_info1[0])}")
+
+    # dump cluster traces
+    trace_filename = f"{workload.workload_name}_baseline_trace.json"
+    traces = dump_demo_cluster_trace(exec_info0, exec_info1, l0, l1, workload, trace_filename)
+
     # dump chrome trace for visualization
-    dump_chrome_tracing(traces, f"./chrome_trace/{workload.workload_name}_baseline_chrometrace.json")
+    chrome_trace_filename = f"./chrome_trace/{workload.workload_name}_baseline_chrometrace.json"
+    dump_chrome_tracing(traces, chrome_trace_filename)
     print_used_time("Benchmark")
-   
+ 
     # Compute statistics
     tflops, parameter_count = compute_gpt_inference_statistics(
-        benchmark_case, latencies0, num_devices_per_host)
+        benchmark_case, l0, num_devices_per_host)
     metadata = {
-        "latencies": latencies0,
+        "latencies": l0,
         "compilation_times": 0,
     }
-    return parameter_count, 0, latencies0, tflops, metadata
+    return parameter_count, 0, l0, tflops, metadata
+
+
+def benchmark_parallel_demo(model_type,
+                            benchmark_case,
+                            num_hosts,
+                            num_devices_per_host):
+    # Get parallel method
+    (method, _, add_manual_layer_marker,
+     num_manual_pipeline_stages) = get_pipeshard_parallel_method(
+         benchmark_case,
+         num_devices_per_host,
+         pipeline_schedule="inference")
+
+    # model1 and model2 share the same mesh
+    virtual_mesh = get_global_cluster().get_virtual_physical_mesh(
+        host_ids=list(range(num_hosts)),
+        num_devices_per_host=num_devices_per_host)
+    virtual_mesh.devices=[[1,0]]
+    set_global_virtual_physical_mesh(virtual_mesh)
+
+    # compile
+    model1, params1, batch1, rngkey1 = prepare_gpt_inference_input_and_model(
+        model_type, benchmark_case, add_manual_layer_marker,
+        num_manual_pipeline_stages)
+    model2, params2, batch2, rngkey2 = prepare_gpt_inference_input_and_model(
+        model_type, benchmark_case, add_manual_layer_marker,
+        num_manual_pipeline_stages)
+
+    infer_step1 = get_infer_step(method, model1, model_type)
+    infer_step2 = get_infer_step(method, model2, model_type)
+
+    exec1, params1 = compile_pipeshard_inference_executable(
+                        benchmark_case.parallel_mode,
+                        infer_step1,
+                        params1, (batch1, rngkey1))
+    exec2, params2 = compile_pipeshard_inference_executable(
+                        benchmark_case.parallel_mode,
+                        infer_step2,
+                        params2, (batch2, rngkey2))
+
+    # warmup
+    _ = infer_step1(params1, batch1, rngkey1)
+    _ = infer_step1(params1, batch1, rngkey1)
+    exec1.sync()
+    exec2.sync()
+
+    # no synchronization
+    global_config.pipeline_check_alive = False
+
+    # Load workload and Benchmark
+    workload_name = "test_workload_8to2_6.667Hz_20s"
+    workload = PossoinWorkLoad.load(workload_name)
+    l0, l1 = workload.run([lambda: infer_step1(params1, batch1, rngkey1), 
+                              lambda: infer_step2(params2, batch2, rngkey2)], 
+                              timers)
+    # model1 and model2 share the same meshgroup, so the timers logged all the requests
+    exec_info = exec1.get_execution_info()
+
+    # drop warmup's execution info
+    for stage_info in exec_info:
+        stage_info.pop(0), stage_info.pop(0)
+ 
+    rq_ids0 = [i for i, model_id in enumerate(workload.model_ids) if model_id == 0]
+    rq_ids1 = [i for i, model_id in enumerate(workload.model_ids) if model_id == 1]
+    exec_info0 = [[stage_info[i] for i in rq_ids0] for stage_info in exec_info]
+    exec_info1 = [[stage_info[i] for i in rq_ids1] for stage_info in exec_info]
+
+   # sanity check
+    assert len(exec_info0) == len(exec_info1) == num_manual_pipeline_stages
+
+   
+    # sanity check
+    print(f"trace_len:{len(l0)}, real_len:{len(exec_info0[0])}")
+    print(f"trace_len:{len(l1)}, real_len:{len(exec_info1[0])}")
+    assert len(l0) == len(exec_info0[0])
+    assert len(l1) == len(exec_info1[0])
+
+    # dump cluster traces
+    if num_manual_pipeline_stages > 1:
+        trace_filename = f"{workload.workload_name}_interop_trace.json"
+    else:
+        trace_filename = f"{workload.workload_name}_intraop_trace.json"
+    traces = dump_demo_cluster_trace(exec_info0, exec_info1, l0, l1, workload, trace_filename)
+
+    # dump chrome trace for visualization
+    if num_manual_pipeline_stages > 1:
+        chrome_trace_filename = f"./chrome_trace/{workload.workload_name}_interop_chrometrace.json"
+    else:
+        chrome_trace_filename = f"./chrome_trace/{workload.workload_name}_intraop_chrometrace.json"
+    dump_chrome_tracing(traces, chrome_trace_filename)
+    print_used_time("Benchmark")
+ 
+    # Compute statistics
+    tflops, parameter_count = compute_gpt_inference_statistics(
+        benchmark_case, l0, virtual_mesh.num_devices_per_host)
+    metadata = {
+        "latencies": l0,
+        "compilation_times": 0,
+    }
+    return parameter_count, 0, l0, tflops, metadata
+
 

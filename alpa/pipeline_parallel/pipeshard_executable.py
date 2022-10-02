@@ -491,12 +491,14 @@ class PipeshardMeshWorkerExecuable:
             #       f"{self.worker.get_max_memory_allocated()/1024**3:.3f} GB "
             #       f"next instruction: {instruction}")
             if instruction.opcode == PipelineInstType.RUN:
-                timers("compute").start()
+                if "stage" in instruction.info:
+                    timers("compute").start(sync_func=sync_func)
                 self.worker.run_executable(instruction.task_uuid,
                                            instruction.input_uuids,
                                            instruction.output_uuids,
                                            **instruction.opaques["kwargs"])
-                timers("compute").suspend(sync_func=sync_func)
+                if "stage" in instruction.info:
+                    timers("compute").suspend(sync_func=sync_func)
             elif instruction.opcode == PipelineInstType.SEND:
                 timers("resharding_send").start()
                 self.worker.run_resharding_send_task(instruction.task_uuid,
@@ -522,7 +524,7 @@ class PipeshardMeshWorkerExecuable:
                      is not None else instruction.output_uuids)[0])
                 timers("resharding_broadcast").suspend()
             elif instruction.opcode == PipelineInstType.FREE:
-                timers("free").start()
+                timers("free").start(sync_func=sync_func)
                 self.worker.delete_buffers(instruction.input_uuids)
                 timers("free").suspend()
 
@@ -534,7 +536,7 @@ class PipeshardMeshWorkerExecuable:
                 timers(timer_name).stop(sync_func=sync_func)
                 # timers(timer_name).log(mode="sum")
                 # timers(timer_name).reset()
-        timers("overall").stop(sync_func=sync_func)
+        timers("overall").stop()
 
         # copy to global env
         assert len(self.output_local_uuids) == len(output_global_uuids)
