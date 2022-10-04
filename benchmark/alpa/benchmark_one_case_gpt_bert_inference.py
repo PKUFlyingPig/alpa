@@ -196,7 +196,7 @@ def benchmark_baseline_demo(model_type,
                         params2, (batch2, rngkey2))
     exec2.mesh_group[0].devices=[[1]]
     # warmup for model2
-    _ = infer_step2(params1, batch1, rngkey1)
+    _ = infer_step2(params2, batch2, rngkey2)
     exec2.sync()
 
     # no synchronization
@@ -280,7 +280,7 @@ def benchmark_parallel_demo(model_type,
 
     # warmup
     _ = infer_step1(params1, batch1, rngkey1)
-    _ = infer_step1(params1, batch1, rngkey1)
+    _ = infer_step2(params2, batch2, rngkey2)
     exec1.sync()
     exec2.sync()
 
